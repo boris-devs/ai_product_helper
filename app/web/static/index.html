@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Product Helper</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2330; --muted:#677084; --line:#dde1e8; --accent:#2457d6; --warn:#a15c00; --err:#b42318; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width:1200px; margin:0 auto; padding:24px 16px; display:grid; gap:20px; grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
+  @media (max-width: 900px) { main { grid-template-columns:1fr; } }
+  h1 { grid-column:1/-1; margin:0; font-size:22px; }
+  h1 small { color:var(--muted); font-weight:400; font-size:14px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px; min-width:0; }
+  label { display:block; font-weight:600; margin:12px 0 4px; }
+  label span { color:var(--muted); font-weight:400; }
+  input, textarea { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:6px; font:inherit; }
+  textarea { resize:vertical; font-family:ui-monospace, monospace; font-size:13px; }
+  .tabs { display:flex; gap:6px; }
+  .tabs button { background:none; color:var(--muted); border:1px solid var(--line); }
+  .tabs button.active { color:var(--accent); border-color:var(--accent); }
+  .actions { display:flex; gap:8px; margin-top:16px; flex-wrap:wrap; }
+  button { padding:8px 14px; border-radius:6px; border:1px solid var(--accent); background:var(--accent); color:#fff; font:inherit; cursor:pointer; }
+  button.secondary { background:#fff; color:var(--accent); }
+  button:disabled { opacity:.5; cursor:wait; }
+  .hidden { display:none; }
+  .status { margin:0 0 12px; color:var(--muted); }
+  .status.error { color:var(--err); }
+  .issues { border-left:3px solid var(--warn); padding:6px 12px; margin:0 0 12px; background:#fff8ec; }
+  .issues li { margin:2px 0; }
+  pre { white-space:pre-wrap; word-wrap:break-word; background:#f2f4f7; padding:12px; border-radius:6px; font-size:13px; max-height:70vh; overflow:auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>AI Product Helper <small>черновик карточки КИП для B2B-магазина</small></h1>
+
+  <section>
+    <div class="tabs">
+      <button type="button" class="active" data-tab="form">Форма</button>
+      <button type="button" data-tab="json">JSON</button>
+    </div>
+
+    <div id="tab-form">
+      <label for="name">Название</label>
+      <input id="name" placeholder="Манометр показывающий DM 02">
+      <label for="manufacturer">Производитель</label>
+      <input id="manufacturer" placeholder="Манотомь">
+      <label for="specs">Характеристики <span>— по одной в строке, «название: значение»</span></label>
+      <textarea id="specs" rows="7" placeholder="диапазон измерений: 0–1,6 МПа&#10;класс точности: 1,5"></textarea>
+      <label for="description">Описание / фрагмент паспорта</label>
+      <textarea id="description" rows="7"></textarea>
+    </div>
+
+    <div id="tab-json" class="hidden">
+      <label for="raw-json">JSON товара</label>
+      <textarea id="raw-json" rows="22">{
+  "name": "Манометр показывающий DM 02",
+  "manufacturer": "Манотомь",
+  "specs": {
+    "диапазон измерений": "0–1,6 МПа",
+    "класс точности": "1,5",
+    "присоединение": "G1/2",
+    "диаметр корпуса": "100 мм"
+  },
+  "description": "Прибор предназначен для измерения избыточного давления..."
+}</textarea>
+    </div>
+
+    <div class="actions">
+      <button id="btn-generate">Сгенерировать карточку</button>
+      <button id="btn-analyze" class="secondary">Проверить полноту данных</button>
+    </div>
+  </section>
+
+  <section>
+    <p id="status" class="status">Заполните данные и нажмите «Сгенерировать».</p>
+    <div id="issues"></div>
+    <div id="result" class="hidden">
+      <div class="tabs">
+        <button type="button" class="active" data-view="markdown">Markdown</button>
+        <button type="button" data-view="json">JSON</button>
+        <button type="button" id="btn-copy" class="secondary">Копировать</button>
+      </div>
+      <pre id="output"></pre>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let mode = "form";
+let lastResult = null;
+let view = "markdown";
+
+document.querySelectorAll("[data-tab]").forEach((btn) => btn.addEventListener("click", () => {
+  mode = btn.dataset.tab;
+  document.querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("active", b === btn));
+  $("tab-form").classList.toggle("hidden", mode !== "form");
+  $("tab-json").classList.toggle("hidden", mode !== "json");
+}));
+
+document.querySelectorAll("[data-view]").forEach((btn) => btn.addEventListener("click", () => {
+  view = btn.dataset.view;
+  document.querySelectorAll("[data-view]").forEach((b) => b.classList.toggle("active", b === btn));
+  renderOutput();
+}));
+
+function formBody() {
+  const specs = {};
+  $("specs").value.split("\n").forEach((line) => {
+    const idx = line.indexOf(":");
+    if (idx > 0) specs[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+  });
+  return JSON.stringify({
+    name: $("name").value, manufacturer: $("manufacturer").value,
+    specs, description: $("description").value,
+  });
+}
+
+const requestBody = () => (mode === "json" ? $("raw-json").value : formBody());
+
+function setStatus(text, isError = false) {
+  $("status").textContent = text;
+  $("status").classList.toggle("error", isError);
+}
+
+function renderIssues(items) {
+  if (!items || !items.length) { $("issues").innerHTML = ""; return; }
+  const ul = document.createElement("ul");
+  items.forEach((i) => {
+    const li = document.createElement("li");
+    li.textContent = i.field ? `${i.field} — ${i.message}` : String(i);
+    ul.appendChild(li);
+  });
+  $("issues").replaceChildren(Object.assign(document.createElement("div"), { className: "issues" }));
+  $("issues").firstChild.append("Требует уточнения:", ul);
+}
+
+function renderOutput() {
+  if (!lastResult) return;
+  $("output").textContent = view === "markdown" ? lastResult.markdown : JSON.stringify(lastResult.card, null, 2);
+}
+
+async function call(path, busyText) {
+  const buttons = [$("btn-generate"), $("btn-analyze")];
+  buttons.forEach((b) => (b.disabled = true));
+  setStatus(busyText);
+  try {
+    const resp = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: requestBody() });
+    const data = await resp.json();
+    if (!resp.ok) {
+      setStatus(`Ошибка ${resp.status}: ${data.detail}`, true);
+      renderIssues(data.missing_fields || data.errors);
+      return null;
+    }
+    return data;
+  } catch (e) {
+    setStatus(`Сервис недоступен: ${e.message}`, true);
+    return null;
+  } finally {
+    buttons.forEach((b) => (b.disabled = false));
+  }
+}
+
+$("btn-analyze").addEventListener("click", async () => {
+  const data = await call("/api/v1/cards/analyze", "Проверяю данные…");
+  if (!data) return;
+  setStatus(data.can_generate ? "Данных достаточно для генерации." : "Данных недостаточно для генерации.", !data.can_generate);
+  renderIssues(data.missing_fields);
+});
+
+$("btn-generate").addEventListener("click", async () => {
+  const data = await call("/api/v1/cards", "Генерирую карточку — обычно 10–40 секунд…");
+  if (!data) return;
+  lastResult = data;
+  setStatus(`Готово · модель ${data.llm_model} · id ${data.id}`);
+  renderIssues(data.card.missing_fields);
+  $("result").classList.remove("hidden");
+  renderOutput();
+});
+
+$("btn-copy").addEventListener("click", async () => {
+  await navigator.clipboard.writeText($("output").textContent);
+  $("btn-copy").textContent = "Скопировано";
+  setTimeout(() => ($("btn-copy").textContent = "Копировать"), 1500);
+});
+</script>
+</body>
+</html>
